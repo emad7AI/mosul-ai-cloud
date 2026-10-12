@@ -90,12 +90,13 @@ def trigger_news():
     return HTMLResponse('<script>alert("جاري فحص القناتين ونشر الخبر المستوفي للشروط..."); window.location.href="/";</script>')
 
 
-# ===== محرك الأخبار المزدوج (جريدة الصباح + جمال البدراني) =====
+# ===== محرك الأخبار الذكي (الموصل + نينوى + الرواتب + التقنية والذكاء الاصطناعي) =====
 published_news_memory = set()
 
 CHANNELS = [
     {"source": "jamal_albadrany", "url": "https://t.me/s/jamal_albadrany"},
-    {"source": "alsbaahiq", "url": "https://t.me/s/alsbaahiq"}
+    {"source": "alsbaahiq", "url": "https://t.me/s/alsbaahiq"},
+    {"source": "Axia_Tech", "url": "https://t.me/s/Axia_Tech"}
 ]
 
 def check_and_post_curated_news(force=False):
@@ -119,7 +120,7 @@ def check_and_post_curated_news(force=False):
                     continue
 
                 text_elem = msg.find("div", class_="tgme_widget_message_text")
-                if not text_elem or len(text_elem.get_text().strip()) < 40:
+                if not text_elem or len(text_elem.get_text().strip()) < 35:
                     continue
 
                 raw_text = text_elem.get_text(separator="\n").strip()
@@ -140,10 +141,10 @@ def check_and_post_curated_news(force=False):
                         published_news_memory.add(post_id)
                         SYSTEM_STATE["news_posted_count"] += 1
                         SYSTEM_STATE["last_news_post"] = f"[{source_name}] " + datetime.now().strftime("%I:%M %p")
-                        print(f"✅ تم نشر خبر معتمد من {source_name}: {post_id}")
-                        return  # نكتفي بنشر خبر واحد معتمد لكل دورة
+                        print(f"✅ تم نشر خبر طازج ومعتمد من {source_name}: {post_id}")
+                        return  # نكتفي بنشر خبر واحد معتمد لكل دورة فحص
                 else:
-                    # تم تجاهل الخبر لأنه لا يستوفي شروط الأهمية أو المحلية
+                    # تم تجاهل الخبر لأنه لا يستوفي شروط الأهمية
                     published_news_memory.add(post_id)
 
     except Exception as e:
@@ -163,15 +164,16 @@ def evaluate_and_format_news(source: str, raw_text: str) -> str | None:
 {raw_text}
 \"\"\"
 
-معايير التصفية والفلترة الصارمة:
-1. إذا كان المصدر (alsbaahiq): انشر إذا كان الخبر يخص محافظة نينوى أو مدينة الموصل، أو إذا كان يخص الملف المالي والمعيشي العراقي الحيوي (الرواتب، سلم الرواتب، سعر صرف الدولار والعملة، الموازنة، والقرارات الاقتصادية التي تمس جيب المواطن). إذا كان خبراً سياسياً عاماً أو بروتوكولياً لا يخص هذه المحاور أرجع: SKIP.
-2. إذا كان المصدر (jamal_albadrany): انشر فقط الأخبار الحيوية والمهمة جداً للمواطن (رواتب، سلم الرواتب، تعيينات وعقود، عطل رسمية، قرارات مرورية أو أمنية عامة، مشاريع كبرى في الموصل). استبعد الأخبار الخارجية، التكهنات السياسية، والشؤون غير المؤثرة. إذا لم يكن مهماً أرجع: SKIP.
+معايير التصفية والفلترة الصارمة (انشر فقط الأخبار الممتازة):
+1. إذا كان المصدر (alsbaahiq): انشر إذا كان يخص نينوى أو الموصل، أو يخص الرواتب، سلم الرواتب، سعر صرف الدولار، أو قرارات اقتصادية تمس المواطن. ما دون ذلك أرجع: SKIP.
+2. إذا كان المصدر (jamal_albadrany): انشر فقط الأخبار الحيوية والمهمة (رواتب، تعيينات، عطل رسمية، قرارات مرورية، أمنية، أو مشاريع كبرى في الموصل). استبعد الأخبار الخارجية أو التكهنات. إذا لم يكن مهماً أرجع: SKIP.
+3. إذا كان المصدر (Axia_Tech): انشر الأخبار التقنية الثورية والمفيدة فقط (إطلاق أدوات ذكاء اصطناعي كبرى، ميزات وتحديثات جديدة في واتساب وفيسبوك وهواتف آيفون/سامسونج، حماية الحسابات من الاختراق). استبعد الإعلانات التجارية التافهة. إذا لم يكن مهماً أرجع: SKIP.
 
 إذا كان الخبر يستحق النشر:
-- صغه كخبر كبسولة قصير جداً ومكثف (عنوان بارز بإيموجي + سطرين أو 3 أسطر فقط للتفاصيل).
-- التزم بالدقة التامة للأرقام والوقائع؛ إياك أن تختلق أو تدمج معلومات غير موجودة.
+- صغه كخبر كبسولة قصير جداً ومكثف (عنوان بارز بإيموجي + سطرين أو 3 أسطر فقط للتفاصيل الدقيقة).
+- التزم بالدقة التامة للأرقام والوقائع بدون أي مبالغة أو دمج خيالي.
 - احذف اسم المصدر والروابط الخارجية.
-- أضف سؤالاً تفاعلياً قصيراً وهاشتاغات: #الموصل_AI #الموصل #نينوى.
+- أضف سؤالاً تفاعلياً قصيراً وهاشتاغات: #الموصل_AI #الموصل #تكنولوجيا (وحسب الموضوع).
 
 أرجع إما المنشور النهائي أو كلمة SKIP:"""
 
@@ -239,7 +241,7 @@ def comments_loop():
             except Exception as e:
                 print(f"Comments loop error: {e}")
 
-        time.sleep(30)  # فحص كل 30 ثانية
+        time.sleep(30)  # فحص التعليقات كل 30 ثانية
 
 
 def generate_reply(post_context, comment_text, author):
@@ -263,11 +265,11 @@ def generate_reply(post_context, comment_text, author):
         return None
 
 
-# ===== محرك توقيت الأخبار (كل 3 ساعات) =====
+# ===== محرك توقيت الأخبار السريع (فحص كل 10 دقائق لضمان الأخبار الطازجة) =====
 def news_scheduler_loop():
     while True:
         check_and_post_curated_news()
-        time.sleep(10800)  # كل 3 ساعات (10800 ثانية)
+        time.sleep(600)  # فحص كل 10 دقائق (600 ثانية) بدلاً من 3 ساعات!
 
 
 # تشغيل المحركات في الخلفية عند بدء التشغيل
