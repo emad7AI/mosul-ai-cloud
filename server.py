@@ -136,20 +136,30 @@ def check_and_post_alsabah_news(force=False):
 
 
 def rewrite_news(raw_text: str) -> str:
-    # استخدام Gemini لإعادة الصياغة
+    # استخدام Gemini لإعادة الصياغة بدقة صحفية صارمة
     try:
         from google import genai
         from google.genai import types
         client = genai.Client(api_key=GEMINI_API_KEY)
-        prompt = f"""أنت محرر صحفي ذكي في صفحة "{PAGE_NAME}". أعد صياغة هذا الخبر العراقي:
+        prompt = f"""أنت محرر صحفي مسؤول في صفحة "{PAGE_NAME}". 
+مهمتك إعادة صياغة هذا الخبر الرسمي بدقة وأمانة صحفية 100%:
+
+النص الأصلي:
+\"\"\"
 {raw_text}
-- احذف اسم المصدر والروابط تماماً.
-- ابدأ بعنوان وإيموجي صحفي بارز.
-- رتب في نقاط واضحة واختم بسؤال تفاعلي وهاشتاغات: #الموصل_AI #العراق #نينوى."""
+\"\"\"
+
+قواعد صارمة جداً لمنع أي خطأ:
+1. الدقة المطلقة في المصطلحات والأرقام: التزم بالمعنى الحرفي للأرقام والمشاريع (مثال: إذا ذُكر "قطع أراضٍ سكنية" إياك أن تغيرها إلى مزارع أو أي مصطلح آخر!).
+2. ممنوع اختلاق أو دمج أي معلومة من خيالك نهائياً؛ انقل فقط ما ورد في النص.
+3. إذا كان النص عبارة عن جولة صحفية أو عناوين متعددة، اعرض كل ملف في نقطة مستقلة وواضحة.
+4. احذف اسم المصدر الأصلي والروابط الخارجية.
+5. ابدأ بعنوان صحفي رصين ومعبر، واختم بسؤال تفاعلي وهاشتاغات: #الموصل_AI #العراق #نينوى."""
+
         res = client.models.generate_content(
             model="gemini-3.5-flash-lite",
             contents=prompt,
-            config=types.GenerateContentConfig(temperature=0.6)
+            config=types.GenerateContentConfig(temperature=0.2)  # درجة حرارة منخفضة جداً لمنع أي خيال أو اختلاق
         )
         return res.text.strip()
     except Exception as e:
