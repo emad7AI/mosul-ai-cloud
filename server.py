@@ -86,85 +86,104 @@ def toggle_bot():
 
 @app.get("/trigger-news")
 def trigger_news():
-    threading.Thread(target=check_and_post_alsabah_news, args=(True,)).start()
-    return HTMLResponse('<script>alert("جاري فحص ونشر الخبر..."); window.location.href="/";</script>')
+    threading.Thread(target=check_and_post_curated_news, args=(True,)).start()
+    return HTMLResponse('<script>alert("جاري فحص القناتين ونشر الخبر المستوفي للشروط..."); window.location.href="/";</script>')
 
 
-# ===== محرك أخبار جريدة الصباح =====
+# ===== محرك الأخبار المزدوج (جريدة الصباح + جمال البدراني) =====
 published_news_memory = set()
 
-def check_and_post_alsabah_news(force=False):
+CHANNELS = [
+    {"source": "jamal_albadrany", "url": "https://t.me/s/jamal_albadrany"},
+    {"source": "alsbaahiq", "url": "https://t.me/s/alsbaahiq"}
+]
+
+def check_and_post_curated_news(force=False):
     if not SYSTEM_STATE["bot_enabled"] and not force:
         return
 
     try:
-        url = "https://t.me/s/alsbaahiq"
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-        if res.status_code != 200:
-            return
-
-        soup = BeautifulSoup(res.text, "html.parser")
-        messages = soup.find_all("div", class_="tgme_widget_message")
-        
-        for msg in reversed(messages):
-            post_id = msg.get("data-post")
-            if not post_id or post_id in published_news_memory:
+        for ch in CHANNELS:
+            source_name = ch["source"]
+            url = ch["url"]
+            res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+            if res.status_code != 200:
                 continue
 
-            text_elem = msg.find("div", class_="tgme_widget_message_text")
-            if not text_elem or len(text_elem.get_text().strip()) < 50:
-                continue
-
-            raw_text = text_elem.get_text(separator="\n").strip()
+            soup = BeautifulSoup(res.text, "html.parser")
+            messages = soup.find_all("div", class_="tgme_widget_message")
             
-            # فحص وجود صورة
-            photo_url = None
-            photo_elem = msg.find("a", class_="tgme_widget_message_photo_wrap")
-            if photo_elem and "background-image" in photo_elem.get("style", ""):
-                m = re.search(r"url\('?(.*?)'?\)", photo_elem["style"])
-                if m: photo_url = m.group(1)
+            for msg in reversed(messages):
+                post_id = msg.get("data-post")
+                if not post_id or post_id in published_news_memory:
+                    continue
 
-            # إعادة الصياغة
-            rewritten = rewrite_news(raw_text)
-            if rewritten and post_to_fb(rewritten, photo_url):
-                published_news_memory.add(post_id)
-                SYSTEM_STATE["news_posted_count"] += 1
-                SYSTEM_STATE["last_news_post"] = datetime.now().strftime("%I:%M %p")
-                break
+                text_elem = msg.find("div", class_="tgme_widget_message_text")
+                if not text_elem or len(text_elem.get_text().strip()) < 40:
+                    continue
+
+                raw_text = text_elem.get_text(separator="\n").strip()
+                
+                # فحص وجود صورة مرفقة
+                photo_url = None
+                photo_elem = msg.find("a", class_="tgme_widget_message_photo_wrap")
+                if photo_elem and "background-image" in photo_elem.get("style", ""):
+                    m = re.search(r"url\('?(.*?)'?\)", photo_elem["style"])
+                    if m: photo_url = m.group(1)
+
+                # التقييم والفلترة والصياغة المختصرة
+                formatted_post = evaluate_and_format_news(source_name, raw_text)
+                
+                # إذا وافق الذكاء الاصطناعي وكان الخبر مستوفياً للشروط
+                if formatted_post and "SKIP" not in formatted_post:
+                    if post_to_fb(formatted_post, photo_url):
+                        published_news_memory.add(post_id)
+                        SYSTEM_STATE["news_posted_count"] += 1
+                        SYSTEM_STATE["last_news_post"] = f"[{source_name}] " + datetime.now().strftime("%I:%M %p")
+                        print(f"✅ تم نشر خبر معتمد من {source_name}: {post_id}")
+                        return  # نكتفي بنشر خبر واحد معتمد لكل دورة
+                else:
+                    # تم تجاهل الخبر لأنه لا يستوفي شروط الأهمية أو المحلية
+                    published_news_memory.add(post_id)
+
     except Exception as e:
-        print(f"News error: {e}")
+        print(f"News engine error: {e}")
 
 
-def rewrite_news(raw_text: str) -> str:
-    # استخدام Gemini لإعادة الصياغة بدقة صحفية صارمة
+def evaluate_and_format_news(source: str, raw_text: str) -> str | None:
     try:
         from google import genai
         from google.genai import types
         client = genai.Client(api_key=GEMINI_API_KEY)
-        prompt = f"""أنت محرر صحفي مسؤول في صفحة "{PAGE_NAME}". 
-مهمتك إعادة صياغة هذا الخبر الرسمي بدقة وأمانة صحفية 100%:
 
-النص الأصلي:
+        prompt = f"""أنت مدير تحرير صحفي لصفحة فيسبوك "{PAGE_NAME}".
+المصدر: ({source})
+الخبر الخام:
 \"\"\"
 {raw_text}
 \"\"\"
 
-قواعد صارمة جداً لمنع أي خطأ:
-1. الدقة المطلقة في المصطلحات والأرقام: التزم بالمعنى الحرفي للأرقام والمشاريع (مثال: إذا ذُكر "قطع أراضٍ سكنية" إياك أن تغيرها إلى مزارع أو أي مصطلح آخر!).
-2. ممنوع اختلاق أو دمج أي معلومة من خيالك نهائياً؛ انقل فقط ما ورد في النص.
-3. إذا كان النص عبارة عن جولة صحفية أو عناوين متعددة، اعرض كل ملف في نقطة مستقلة وواضحة.
-4. احذف اسم المصدر الأصلي والروابط الخارجية.
-5. ابدأ بعنوان صحفي رصين ومعبر، واختم بسؤال تفاعلي وهاشتاغات: #الموصل_AI #العراق #نينوى."""
+معايير التصفية والفلترة الصارمة:
+1. إذا كان المصدر (alsbaahiq): انشر إذا كان الخبر يخص محافظة نينوى أو مدينة الموصل، أو إذا كان يخص الملف المالي والمعيشي العراقي الحيوي (الرواتب، سلم الرواتب، سعر صرف الدولار والعملة، الموازنة، والقرارات الاقتصادية التي تمس جيب المواطن). إذا كان خبراً سياسياً عاماً أو بروتوكولياً لا يخص هذه المحاور أرجع: SKIP.
+2. إذا كان المصدر (jamal_albadrany): انشر فقط الأخبار الحيوية والمهمة جداً للمواطن (رواتب، سلم الرواتب، تعيينات وعقود، عطل رسمية، قرارات مرورية أو أمنية عامة، مشاريع كبرى في الموصل). استبعد الأخبار الخارجية، التكهنات السياسية، والشؤون غير المؤثرة. إذا لم يكن مهماً أرجع: SKIP.
+
+إذا كان الخبر يستحق النشر:
+- صغه كخبر كبسولة قصير جداً ومكثف (عنوان بارز بإيموجي + سطرين أو 3 أسطر فقط للتفاصيل).
+- التزم بالدقة التامة للأرقام والوقائع؛ إياك أن تختلق أو تدمج معلومات غير موجودة.
+- احذف اسم المصدر والروابط الخارجية.
+- أضف سؤالاً تفاعلياً قصيراً وهاشتاغات: #الموصل_AI #الموصل #نينوى.
+
+أرجع إما المنشور النهائي أو كلمة SKIP:"""
 
         res = client.models.generate_content(
             model="gemini-3.5-flash-lite",
             contents=prompt,
-            config=types.GenerateContentConfig(temperature=0.2)  # درجة حرارة منخفضة جداً لمنع أي خيال أو اختلاق
+            config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=350)
         )
         return res.text.strip()
     except Exception as e:
-        print(f"Gemini error: {e}")
-        return raw_text
+        print(f"Gemini evaluation error: {e}")
+        return None
 
 
 def post_to_fb(message: str, image_url: str = None) -> bool:
@@ -247,7 +266,7 @@ def generate_reply(post_context, comment_text, author):
 # ===== محرك توقيت الأخبار (كل 3 ساعات) =====
 def news_scheduler_loop():
     while True:
-        check_and_post_alsabah_news()
+        check_and_post_curated_news()
         time.sleep(10800)  # كل 3 ساعات (10800 ثانية)
 
 
