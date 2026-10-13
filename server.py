@@ -54,7 +54,7 @@ else:
     except:
         GEMINI_KEYS = []
 
-MODELS_FALLBACK = ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash"]
+MODELS_FALLBACK = ["gemini-flash-latest", "gemini-3.8-flash", "gemini-3.7-flash"]
 PAGE_NAME = "الموصل AI"
 
 # فترات التوقيت (بالثواني)
@@ -103,33 +103,58 @@ def save_json_set(file_path: str, data_set: set):
 replied_comments_memory = load_json_set(REPLIED_FILE)
 published_news_memory = load_json_set(PUBLISHED_NEWS_FILE)
 
-# ===== دالة التنسيق الإلزامية: وضع الإنكليزية والأرقام بين قوسين =====
-def wrap_en_and_numbers(text: str) -> str:
-    """تضمن بنسبة 100% أن أي كلمة/حرف إنكليزي أو أي رقم يوضع بين قوسين ( )"""
-    saved = []
-    def save_item(m):
-        idx = len(saved)
-        saved.append(m.group(0))
-        return f"__محفوظ_{idx}__"
+# ===== دالة التنسيق الاحترافية للأقواس =====
+def format_text_parentheses(text: str) -> str:
+    """
+    تنسيق فائق الدقة:
+    - يضع الجملة الإنكليزية كاملة بين قوسين (إذا كانت جملة) أو الكلمة المنفردة (إذا كانت كلمة).
+    - يضع الأرقام المكتوبة كأرقام ونسب مئوية مثل (2026)، (5%)، (24) بين قوسين.
+    - لا يضع الكلمات العربية المكتوبة مثل "مليون" أو "آلاف" بين أقواس نهائياً.
+    - يحمي الروابط والهاشتاغات وما هو بين قوسين مسبقاً من التكرار.
+    """
+    if not text:
+        return ""
 
-    # حماية الهاشتاغات
-    text = re.sub(r'#[\w_]+', save_item, text)
-    # حماية الأقواس القائمة مسبقاً
-    text = re.sub(r'\([^\(\)]+\)', save_item, text)
-
-    # وضع الكلمات الإنكليزية بين قوسين
-    text = re.sub(r'[a-zA-Z]+', lambda m: f"({m.group(0)})", text)
-    # وضع الأرقام والنسب بين قوسين
-    text = re.sub(r'\d+(?:[\.,]\d+)?%?', lambda m: f"({m.group(0)})", text)
-
-    # استعادة العناصر المحفوظة
-    for idx in range(len(saved) - 1, -1, -1):
-        text = text.replace(f"__محفوظ_({idx})__", saved[idx])
-        text = text.replace(f"__محفوظ_{idx}__", saved[idx])
-
-    # تنظيف الأقواس المزدوجة إن وُجدت
     text = re.sub(r'\(\s*\((.*?)\)\s*\)', r'(\1)', text)
+    protected = []
+    def save_item(m):
+        idx = len(protected)
+        protected.append(m.group(0))
+        return chr(0xE000 + idx)
+
+    # 1. حماية الروابط
+    text = re.sub(r'https?://\S+', save_item, text)
+    # 2. حماية الهاشتاغات
+    text = re.sub(r'#[\w_]+', save_item, text)
+    # 3. حماية ما هو بين قوسين مسبقاً
+    text = re.sub(r'\([^\(\)\n\r]+\)', save_item, text)
+
+    # 4. وضع الجمل والعبارات الإنكليزية الكاملة أو الكلمات المنفردة بين قوسين
+    def wrap_en(m):
+        s = m.group(0).strip()
+        if s:
+            return f"({s})"
+        return s
+
+    text = re.sub(r'[A-Za-z][A-Za-z0-9\s,\.\'\-_/]*(?:[A-Za-z0-9])|[A-Za-z]', wrap_en, text)
+
+    # 5. وضع الأرقام والنسب المئوية بين قوسين (أرقام فقط وليست كلمات عربية مثل مليون)
+    text = re.sub(r'\b\d+(?:[/\.,]\d+)?%?', lambda m: f"({m.group(0)})", text)
+
+    # 6. استعادة العناصر المحمية
+    for idx, orig in enumerate(protected):
+        placeholder = chr(0xE000 + idx)
+        text = text.replace(placeholder, orig)
+
+    # 7. تنظيف نهائي للأقواس
+    text = re.sub(r'\(\s*\((.*?)\)\s*\)', r'(\1)', text)
+    text = re.sub(r'\(\s+', '(', text)
+    text = re.sub(r'\s+\)', ')', text)
+    text = re.sub(r'\(([^)]+)\)%', r'(\1%)', text)
     return text
+
+def wrap_en_and_numbers(text: str) -> str:
+    return format_text_parentheses(text)
 
 
 # ===== مساعد جيميناي متعدد المفاتيح والنماذج المقاوم للضغط =====
@@ -233,15 +258,31 @@ def process_comments_once():
 
     try:
         SYSTEM_STATE["last_comment_check"] = datetime.now().strftime("%I:%M:%S %p")
-        # فحص آخر 20 منشوراً مع تعليقاتها والردود المتفرعة
-        url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/feed"
-        res = requests.get(url, params={
-            "fields": "id,message,comments.limit(30){id,message,from,created_time,comments.limit(30){id,message,from,created_time}}",
-            "access_token": FACEBOOK_PAGE_TOKEN,
-            "limit": 15
-        }, timeout=15).json()
+        posts = []
+        # 1. فحص المنشورات
+        try:
+            url_feed = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/feed"
+            res_feed = requests.get(url_feed, params={
+                "fields": "id,message,comments.limit(30){id,message,from,created_time,comments.limit(30){id,message,from,created_time}}",
+                "access_token": FACEBOOK_PAGE_TOKEN,
+                "limit": 15
+            }, timeout=15).json()
+            posts.extend(res_feed.get("data", []))
+        except:
+            pass
 
-        posts = res.get("data", [])
+        # 2. فحص الصور
+        try:
+            url_photos = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/photos"
+            res_photos = requests.get(url_photos, params={
+                "type": "uploaded",
+                "fields": "id,name,comments.limit(30){id,message,from,created_time,comments.limit(30){id,message,from,created_time}}",
+                "access_token": FACEBOOK_PAGE_TOKEN,
+                "limit": 10
+            }, timeout=15).json()
+            posts.extend(res_photos.get("data", []))
+        except:
+            pass
         for post in posts:
             post_context = post.get("message", "")
             top_comments = post.get("comments", {}).get("data", [])
@@ -297,28 +338,39 @@ def process_comments_once():
 
 def generate_smart_comment_reply(context_text: str, comment_text: str, author: str) -> str | None:
     now_year = "2026"
-    prompt = f"""أنت مساعد ذكي ومحبوب يدير صفحة "{PAGE_NAME}" لمدينة الموصل على فيسبوك.
+    prompt = f"""أنت محرر الذكاء الاصطناعي الذكي، اللبق، والخبير لصفحة "{PAGE_NAME}" الرسمية على فيسبوك الخاصة بمدينة الموصل ومحافظة نينوى.
 نحن الآن في عام ({now_year}).
-السياق العام:
-{context_text[:500]}
 
-المعلق ({author}) كتب:
+مهمتك:
+قراءة المنشور وفهم سياقه بدقة، ثم قراءة تعليق المتابع ({author}) وتقديم رد ذكي، شافي، وافٍ، ومباشر يجيب عن سؤاله ويخدمه بأعلى درجات اللباقة والاحترام.
+
+سياق المنشور وتفاصيله الكاملة:
+---
+{context_text[:2500] if context_text else "منشور عام لصفحة الموصل AI"}
+---
+
+تعليق المتابع ({author}):
 "{comment_text}"
 
-التعليمات الإلزامية:
-1. رد عليه بأسلوب مهذب، ذكي، وبلهجة مصلاوية/عراقية لطيفة جداً ومحببة (أو فصحى مبسطة).
-2. لا تتجاوز سطرين إلى ثلاثة أسطر على الأكثر.
-3. قاعدة تنسيق صارمة: أي كلمة باللغة الإنكليزية أو أي رقم، يجب أن يكون بين قوسين حصراً مثل: (AI)، ({now_year})، (24)، (5).
-4. إذا كان التعليق مسيئاً أو فارغاً تماماً أو مجرد إيموجي، اكتب فقط: SKIP.
+تعليمات صياغة الرد (حتمية وإلزامية):
+1. **الفهم والشمولية**: اقرأ تعليق المتابع بعناية واربطه بتفاصيل المنشور أعلاه. إذا كان يسأل عن شروط، ضوابط، تفاصيل، أو استفسار توضيحي، اشرح له النقاط بدقة ووضوح وبشكل منظم ومفيد يغنيه عن البحث، واختم بجملة ترحيبية أو استفسار إن كان بحاجة لمزيد من المساعدة.
+2. **الأسلوب واللغة**: تحدث بأسلوب عراقي/مصلاوي راقٍ وودود ومحترم (أو فصحى مبسطة لطيفة مثل: أهلاً وسهلاً بك أخي العزيز، تدلل، بخدمتك)، كأنك محرر ووكيل ذكي يمثل الصفحة بأفضل وجه.
+3. **تجنب البتر والاختصار المفرط**: ممنوع نهائياً الردود المبتورة أو غير المكتملة أو التحيات الفارغة مثل "أهلاً بيك" وحدها دون إجابة. يجب أن تكتمل كل فكرة وجملة حتى نهايتها.
+4. **قواعد الأقواس الإلزامية**:
+   - أي جملة أو عبارة كاملة باللغة الإنكليزية، ضع الجملة كاملة بين قوسين: (مثل هذه الجملة).
+   - أي كلمة إنكليزية منفردة أو حرف إنكليزي، ضعه بين قوسين مثل: (AI)، (DNA).
+   - الأرقام المكتوبة كأرقام (digits) والنسب المئوية ضعها بين قوسين مثل: (2026)، (5%)، (24).
+   - الأرقام المكتوبة ككلمات عربية مثل "مليون" أو "آلاف" أو "خمسة" لا تضعها بين أقواس أبداً.
+5. إذا كان التعليق مسيئاً تماماً، اكتب فقط: SKIP.
 
-اكتب الرد المباشر فقط:"""
+الرد الكامل المتقن:"""
 
-    raw_reply = call_gemini(prompt, max_tokens=220, temperature=0.7)
-    if not raw_reply or "SKIP" in raw_reply or len(raw_reply) < 3:
+    raw_reply = call_gemini(prompt, max_tokens=1200, temperature=0.7)
+    if not raw_reply or "SKIP" in raw_reply or len(raw_reply) < 5:
         return None
 
     # تطبيق الفلترة الإلزامية للأقواس
-    return wrap_en_and_numbers(raw_reply)
+    return format_text_parentheses(raw_reply)
 
 
 def post_comment_reply(comment_id: str, reply_text: str) -> bool:
