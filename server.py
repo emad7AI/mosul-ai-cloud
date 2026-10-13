@@ -125,12 +125,8 @@ def check_and_post_curated_news(force=False):
 
                 raw_text = text_elem.get_text(separator="\n").strip()
                 
-                # فحص وجود صورة مرفقة
+                # منع سحب صور التليجرام نهائياً لتجنب ظهور لوجو وشعارات القنوات الأخرى
                 photo_url = None
-                photo_elem = msg.find("a", class_="tgme_widget_message_photo_wrap")
-                if photo_elem and "background-image" in photo_elem.get("style", ""):
-                    m = re.search(r"url\('?(.*?)'?\)", photo_elem["style"])
-                    if m: photo_url = m.group(1)
 
                 # التقييم والفلترة والصياغة المختصرة
                 formatted_post = evaluate_and_format_news(source_name, raw_text)
