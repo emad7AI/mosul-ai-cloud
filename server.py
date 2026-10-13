@@ -1,32 +1,31 @@
 """
 ===================================================
-  الموصل AI - خادم السحابة المتكامل (Render Web Service)
-  الإصدار المطور: v5.0 (2026)
+  الموصل AI - الخادم السحابي المتكامل 24/7 (Render Production v7)
   
-  الميزات الأساسية:
-  1. وكيل التعليقات الذكي (24/7):
-     - يراقب التعليقات الأساسية والردود المتفرعة (Nested Replies)
-     - يرد بلهجة مصلاوية/عراقية لطيفة وذكية
-     - يضع أي أحرف/كلمات إنكليزية وأي أرقام بين قوسين ( ) تلقائياً
-     - معالجة آمنة لبيانات فيسبوك بدون أي توقف أو أخطاء
-  
-  2. وكيل الأخبار الذكي والموزع حسب الأهمية:
-     - أخبار التكنولوجيا (Axia_Tech): منشور واحد كل 6 ساعات
-     - جريدة الصباح (alsbaahiq):
-       * فحص كل 5-10 دقائق
-       * أخبار الموصل ونينوى أو الرواتب والتعيينات: نشر فوري ومباشر!
-       * الأخبار العامة المهمة: منشور واحد كل 3 ساعات فقط
-     - جمال البدراني (jamal_albadrany):
-       * أخبار عاجلة ومهمة للموصل: نشر فوري ومباشر!
-       * الأخبار العادية: منشور كل ساعتين حسب الأهمية
-     - صياغة فائقة الاختصار (كبسولة سريعة أقل من 35 كلمة)
-     - وضع كل الأرقام والكلمات الإنكليزية بين قوسين ( )
+  المعمارية المعزولة تماماً:
+  1. وكيل التعليقات المستمر (Comments Engine):
+     - Thread منفصل تماماً (فحص كل 25 ثانية).
+     - رد ذكي، طبيعي، ومهذب باللهجة العراقية اللطيفة أو الفصحى المبسطة.
+     - دعم كامل للمنشورات، الصور، والريلز والحوارات المتفرعة.
+     - تدوير المفاتيح التلقائي لتجاوز أي حدود.
+     
+  2. وكيل الأخبار الذكي (News Engine):
+     - Thread منفصل تماماً (فحص كل 15 دقيقة).
+     - 3 قنوات معتمدة:
+       * الصباح (@alsbaahiq): الموصل/الرواتب فوري | العام كل 3 ساعات.
+       * جمال البدراني (@jamal_albadrany): العاجل فوري | العام كل 3 ساعات.
+       * التكنولوجيا والذكاء الاصطناعي (@Axia_Tech): منشور كل 8 ساعات.
+     - نصوص نقية فقط (Text-only) بدون أي صور أو علامات مائية.
+     - صياغة تكيفية وذكية بدون انقطاع في النصوص ومعلومات دقيقة 100%.
+
+  3. لوحة تحكم سحابية FastAPI ونقطة استيقاظ UptimeRobot.
 ===================================================
 """
 import os, sys, time, json, threading, re
 from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
+
 try:
     from fastapi import FastAPI
     from fastapi.responses import HTMLResponse
@@ -34,557 +33,692 @@ try:
     HAS_FASTAPI = True
 except ImportError:
     HAS_FASTAPI = False
+
 import google.genai as genai
 from google.genai import types
 
-# ===== إعدادات الصفحة وجوجل (تُقرأ بأمان من متغيرات البيئة لمنع كشفها) =====
+# ===== إعدادات فيسبوك وجوجل =====
 FACEBOOK_PAGE_ID = os.getenv("FACEBOOK_PAGE_ID", "1322945474237295")
 FACEBOOK_PAGE_TOKEN = os.getenv("FACEBOOK_PAGE_TOKEN", "")
 
-# جلب مفاتيح جيميناي من متغيرات البيئة (Render) أو الإعدادات المحلية
+# جلب مفاتيح جيميناي بأمان من متغيرات البيئة في Render
 gemini_env = os.getenv("GEMINI_API_KEY", "")
 if gemini_env:
     GEMINI_KEYS = [k.strip() for k in gemini_env.split(",") if k.strip()]
 else:
+    # محاولة القراءة من الإعدادات المحلية في حال التشغيل المحلي
     try:
         from config.settings import GEMINI_KEYS as LOCAL_KEYS, FACEBOOK_PAGE_TOKEN as LOCAL_FB_TOKEN
         GEMINI_KEYS = LOCAL_KEYS
         if not FACEBOOK_PAGE_TOKEN:
             FACEBOOK_PAGE_TOKEN = LOCAL_FB_TOKEN
-    except:
+    except Exception:
         GEMINI_KEYS = []
 
-MODELS_FALLBACK = ["gemini-flash-latest", "gemini-3.8-flash", "gemini-3.7-flash"]
 PAGE_NAME = "الموصل AI"
+ACTIVE_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
+KEY_PRIORITY = [7, 6, 5, 1, 0, 2, 3, 4]
 
-# فترات التوقيت (بالثواني)
-TECH_INTERVAL = 6 * 3600          # كل 6 ساعات منشور تقني واحد
-ALSABAH_GENERAL_INTERVAL = 3 * 3600  # كل 3 ساعات منشور عام من الصباح إذا لم يوجد خبر عاجل
-JAMAL_REGULAR_INTERVAL = 2 * 3600    # كل ساعتين منشور اعتيادي من جمال البدراني
-
-# سجلات التوقيت والذاكرة
-TIMESTAMPS = {
-    "Axia_Tech": 0.0,
-    "alsbaahiq_general": 0.0,
-    "jamal_regular": 0.0
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
+# ===== حالة النظام والإحصائيات =====
 SYSTEM_STATE = {
-    "bot_enabled": True,
-    "last_comment_check": "لم يبدأ بعد",
-    "last_news_check": "لم يبدأ بعد",
-    "last_news_post": "لم ينشر بعد",
+    "comments_enabled": True,
+    "news_enabled": True,
+    "last_comment_check": "جاري البدء...",
     "comments_replied_count": 0,
-    "news_posted_count": 0
+    "last_news_check": "جاري البدء...",
+    "news_published_count": 0,
+    "last_news_title": "لا يوجد بعد",
+    "last_action": "النظام يعمل بنجاح"
 }
 
-# ملف حفظ التعليقات لتفادي التكرار بعد إعادة التشغيل
+# ===== مسارات التخزين الدائم لمنع التكرار =====
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
+
 REPLIED_FILE = os.path.join(DATA_DIR, "replied_comments.json")
 PUBLISHED_NEWS_FILE = os.path.join(DATA_DIR, "published_news.json")
+NEWS_TIMESTAMPS_FILE = os.path.join(DATA_DIR, "news_timestamps.json")
 
-def load_json_set(file_path: str) -> set:
-    if os.path.exists(file_path):
+
+# -------------------------------------------------------------
+# 1. إدارة ذاكرة التعليقات والأخبار
+# -------------------------------------------------------------
+def load_replied() -> set:
+    if os.path.exists(REPLIED_FILE):
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(REPLIED_FILE, "r", encoding="utf-8") as f:
                 return set(json.load(f))
         except:
             return set()
     return set()
 
-def save_json_set(file_path: str, data_set: set):
+def save_replied(comment_id: str):
+    replied = load_replied()
+    replied.add(comment_id)
     try:
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(list(data_set), f)
+        with open(REPLIED_FILE, "w", encoding="utf-8") as f:
+            json.dump(list(replied), f)
     except Exception as e:
-        print(f"Error saving {file_path}: {e}")
+        print(f"Error saving replied comments: {e}")
 
-replied_comments_memory = load_json_set(REPLIED_FILE)
-published_news_memory = load_json_set(PUBLISHED_NEWS_FILE)
+replied_memory = load_replied()
 
-# ===== دالة التنسيق الاحترافية للأقواس =====
-def format_text_parentheses(text: str) -> str:
-    """
-    تنسيق فائق الدقة:
-    - يضع الجملة الإنكليزية كاملة بين قوسين (إذا كانت جملة) أو الكلمة المنفردة (إذا كانت كلمة).
-    - يضع الأرقام المكتوبة كأرقام ونسب مئوية مثل (2026)، (5%)، (24) بين قوسين.
-    - لا يضع الكلمات العربية المكتوبة مثل "مليون" أو "آلاف" بين أقواس نهائياً.
-    - يحمي الروابط والهاشتاغات وما هو بين قوسين مسبقاً من التكرار.
-    """
-    if not text:
-        return ""
+def load_published_news() -> set:
+    if os.path.exists(PUBLISHED_NEWS_FILE):
+        try:
+            with open(PUBLISHED_NEWS_FILE, "r", encoding="utf-8") as f:
+                return set(json.load(f))
+        except:
+            return set()
+    return set()
 
-    text = re.sub(r'\(\s*\((.*?)\)\s*\)', r'(\1)', text)
-    protected = []
-    def save_item(m):
-        idx = len(protected)
-        protected.append(m.group(0))
-        return chr(0xE000 + idx)
+def save_published_news(post_id: str):
+    news_set = load_published_news()
+    news_set.add(post_id)
+    try:
+        with open(PUBLISHED_NEWS_FILE, "w", encoding="utf-8") as f:
+            json.dump(list(news_set), f)
+    except Exception as e:
+        print(f"Error saving published news: {e}")
 
-    # 1. حماية الروابط
-    text = re.sub(r'https?://\S+', save_item, text)
-    # 2. حماية الهاشتاغات
-    text = re.sub(r'#[\w_]+', save_item, text)
-    # 3. حماية ما هو بين قوسين مسبقاً
-    text = re.sub(r'\([^\(\)\n\r]+\)', save_item, text)
+published_news_memory = load_published_news()
 
-    # 4. وضع الجمل والعبارات الإنكليزية الكاملة أو الكلمات المنفردة بين قوسين
-    def wrap_en(m):
-        s = m.group(0).strip()
-        if s:
-            return f"({s})"
-        return s
+def load_timestamps() -> dict:
+    if os.path.exists(NEWS_TIMESTAMPS_FILE):
+        try:
+            with open(NEWS_TIMESTAMPS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return {"last_any_post": 0, "last_alsabah": 0, "last_badrany": 0, "last_tech": 0}
 
-    text = re.sub(r'[A-Za-z][A-Za-z0-9\s,\.\'\-_/]*(?:[A-Za-z0-9])|[A-Za-z]', wrap_en, text)
-
-    # 5. وضع الأرقام والنسب المئوية بين قوسين (أرقام فقط وليست كلمات عربية مثل مليون)
-    text = re.sub(r'\b\d+(?:[/\.,]\d+)?%?', lambda m: f"({m.group(0)})", text)
-
-    # 6. استعادة العناصر المحمية
-    for idx, orig in enumerate(protected):
-        placeholder = chr(0xE000 + idx)
-        text = text.replace(placeholder, orig)
-
-    # 7. تنظيف نهائي للأقواس
-    text = re.sub(r'\(\s*\((.*?)\)\s*\)', r'(\1)', text)
-    text = re.sub(r'\(\s+', '(', text)
-    text = re.sub(r'\s+\)', ')', text)
-    text = re.sub(r'\(([^)]+)\)%', r'(\1%)', text)
-    return text
-
-def wrap_en_and_numbers(text: str) -> str:
-    return format_text_parentheses(text)
+def save_timestamps(ts: dict):
+    try:
+        with open(NEWS_TIMESTAMPS_FILE, "w", encoding="utf-8") as f:
+            json.dump(ts, f, indent=2)
+    except Exception as e:
+        print(f"Error saving timestamps: {e}")
 
 
-# ===== مساعد جيميناي متعدد المفاتيح والنماذج المقاوم للضغط =====
-def call_gemini(prompt: str, max_tokens: int = 350, temperature: float = 0.7) -> str | None:
-    for key in GEMINI_KEYS:
+# -------------------------------------------------------------
+# 2. وكيل التعليقات الذكي (Comments Engine)
+# -------------------------------------------------------------
+def get_posts_with_comments() -> list:
+    items = []
+    seen = set()
+
+    for endpoint in ["feed", "published_posts"]:
+        try:
+            url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/{endpoint}"
+            res = requests.get(url, params={
+                "fields": "id,message,comments.limit(30){id,message,from,created_time,comments.limit(30){id,message,from,created_time}}",
+                "access_token": FACEBOOK_PAGE_TOKEN,
+                "limit": 25
+            }, timeout=15).json()
+            for p in res.get("data", []):
+                pid = p.get("id")
+                if pid and pid not in seen:
+                    seen.add(pid)
+                    items.append(p)
+        except Exception:
+            pass
+
+    try:
+        url_photos = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/photos"
+        res_photos = requests.get(url_photos, params={
+            "type": "uploaded",
+            "fields": "id,name,comments.limit(30){id,message,from,created_time,comments.limit(30){id,message,from,created_time}}",
+            "access_token": FACEBOOK_PAGE_TOKEN,
+            "limit": 25
+        }, timeout=15).json()
+        for p in res_photos.get("data", []):
+            pid = p.get("id")
+            if pid and pid not in seen:
+                seen.add(pid)
+                items.append(p)
+    except Exception:
+        pass
+
+    try:
+        url_reels = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/video_reels"
+        res_reels = requests.get(url_reels, params={
+            "fields": "id,description,comments.limit(30){id,message,from,created_time,comments.limit(30){id,message,from,created_time}}",
+            "access_token": FACEBOOK_PAGE_TOKEN,
+            "limit": 20
+        }, timeout=15).json()
+        for p in res_reels.get("data", []):
+            pid = p.get("id")
+            if pid and pid not in seen:
+                seen.add(pid)
+                items.append(p)
+    except Exception:
+        pass
+
+    return items
+
+
+def generate_smart_reply(context_text: str, comment_text: str, author: str) -> str | None:
+    current_date = datetime.now().strftime("%Y-%m-%d")
+
+    prompt = f"""أنت مساعد ذكي ولطيف يدير صفحة "{PAGE_NAME}" على فيسبوك.
+التاريخ الحالي اليوم هو: {current_date}. نحن الآن في عام 2026.
+تذكر دائماً أننا في عام 2026! أجب بناءً على أحدث التطورات ولا تقل أبداً أننا لم نصل لهذا العام.
+
+السياق (سواء كان المنشور أو بداية الحوار):
+---
+{context_text[:800] if context_text else "منشور عام لصفحة الموصل AI"}
+---
+
+الآن، المستخدم ({author}) كتب لك هذا التعليق:
+"{comment_text}"
+
+مهمتك:
+- اقرأ التعليق وافهم هل هو تعليق جديد أم رد على كلامك السابق؟ ورد بناءً على ذلك.
+- أجب بمعلومات مواكبة لزمننا الحالي (2026).
+- إذا كان يطرح سؤالاً أو استفساراً، أجب عليه بذكاء وبطريقة واضحة ومفيدة تخدمه.
+- إذا كان يعبّر عن رأي، ناقشه بود واحترام.
+- إذا كان يشكرك، اشكره وقل أنك في الخدمة دائماً.
+- إذا كان تفاعلاً بسيطاً أو دعاءً (مثل: ياساتر، الله يستر، بالتوفيق، عاشت ايديكم، روعة، وردة)، رد عليه بلطف وبدعاء طيب يتناسب مع سياق المنشور.
+- اكتب بالعربية الفصحى المبسطة أو العامية العراقية اللطيفة جداً والمهذبة (أسلوب طبيعي ومريح بدون أي تصنع أو تكلف).
+- لا تبدأ بـ "بالتأكيد" أو عبارات روبوتية جافة.
+- لا تستخدم أكثر من إيموجي واحد أو اثنين.
+- إذا كان التعليق مسيئاً تماماً (سباب أو شتيمة)، أرجع الكلمة: SKIP
+
+الرد:"""
+
+    ordered_keys = [GEMINI_KEYS[i] for i in KEY_PRIORITY if i < len(GEMINI_KEYS)]
+
+    for key in ordered_keys:
         client = genai.Client(api_key=key)
-        for model in MODELS_FALLBACK:
+        for model in ACTIVE_MODELS:
             try:
-                res = client.models.generate_content(
+                chat = client.chats.create(
                     model=model,
-                    contents=prompt,
                     config=types.GenerateContentConfig(
-                        temperature=temperature,
-                        max_output_tokens=max_tokens
+                        temperature=0.7,
+                        max_output_tokens=600,
                     )
                 )
-                if res and res.text:
-                    return res.text.strip()
+                response = chat.send_message(prompt)
+                if response and response.text:
+                    reply = response.text.strip()
+                    if "SKIP" in reply or len(reply) < 3:
+                        return None
+                    return reply
             except Exception as e:
-                err_str = str(e)
-                if "503" in err_str or "429" in err_str:
-                    continue  # جرب النموذج التالي أو المفتاح التالي
-                elif "404" in err_str:
-                    continue
-                else:
+                err = str(e)
+                if "429" in err or "RESOURCE_EXHAUSTED" in err:
                     break
+                continue
+
     return None
 
 
-if HAS_FASTAPI:
-    app = FastAPI(title="Mosul AI Cloud Engine")
-
-    # ===== لوحة التحكم من الموبايل =====
-    @app.get("/", response_class=HTMLResponse)
-    def dashboard():
-        status_badge = '<span style="color:#00ff88;font-weight:bold;">🟢 شغال 24/7</span>' if SYSTEM_STATE["bot_enabled"] else '<span style="color:#ff4444;font-weight:bold;">🔴 متوقف مؤقتاً</span>'
-        toggle_btn_text = "إيقاف البوت مؤقتاً ⏸️" if SYSTEM_STATE["bot_enabled"] else "تشغيل البوت الآن ▶️"
-        
-        html_content = f"""<!DOCTYPE html>
-<html dir="rtl" lang="ar">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>لوحة تحكم الموصل AI</title>
-    <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0b1329; color: #f8fafc; text-align: center; padding: 20px; }}
-        .card {{ background: #162447; border-radius: 18px; padding: 24px; max-width: 480px; margin: 15px auto; box-shadow: 0 10px 30px rgba(0,0,0,0.5); border: 1px solid #1f3a60; }}
-        h1 {{ color: #00d2ff; font-size: 24px; margin-bottom: 6px; }}
-        .status {{ font-size: 17px; margin: 14px 0; padding: 12px; background: #1f3158; border-radius: 12px; }}
-        .btn {{ display: block; width: 100%; padding: 14px; margin: 10px 0; border: none; border-radius: 12px; font-size: 16px; font-weight: bold; cursor: pointer; text-decoration: none; box-sizing: border-box; }}
-        .btn-toggle {{ background: #0077b6; color: white; }}
-        .btn-news {{ background: #00b4d8; color: #0b1329; }}
-        .stats {{ text-align: right; font-size: 14px; color: #94a3b8; line-height: 2.0; margin-top: 15px; border-top: 1px solid #2a4365; padding-top: 12px; }}
-    </style>
-</head>
-<body>
-    <div class="card">
-        <h1>🤖 مركز تحكم الموصل AI</h1>
-        <p style="color:#94a3b8;font-size:13px;">إدارة التعليقات ونشر الأخبار التلقائي</p>
-        
-        <div class="status">الحالة العامة: {status_badge}</div>
-        
-        <a href="/toggle" class="btn btn-toggle">{toggle_btn_text}</a>
-        <a href="/trigger-news" class="btn btn-news">📰 فحص ونشر خبر الآن فوراً</a>
-        <a href="/trigger-comments" class="btn btn-toggle" style="background:#2ec4b6;">💬 فحص والرد على التعليقات الآن</a>
-        
-        <div class="stats">
-            <div>⏱️ آخر فحص للتعليقات: <b>{SYSTEM_STATE["last_comment_check"]}</b></div>
-            <div>🔍 آخر فحص للأخبار: <b>{SYSTEM_STATE["last_news_check"]}</b></div>
-            <div>📢 آخر خبر منشور: <b>{SYSTEM_STATE["last_news_post"]}</b></div>
-            <div>💬 ردود التعليقات المنجزة: <b>{SYSTEM_STATE["comments_replied_count"]}</b></div>
-            <div>📑 إجمالي الأخبار المنشورة: <b>{SYSTEM_STATE["news_posted_count"]}</b></div>
-        </div>
-    </div>
-</body>
-</html>"""
-        return html_content
-
-    @app.get("/toggle")
-    def toggle_bot():
-        SYSTEM_STATE["bot_enabled"] = not SYSTEM_STATE["bot_enabled"]
-        return HTMLResponse('<script>window.location.href="/";</script>')
-
-    @app.get("/trigger-news")
-    def trigger_news():
-        threading.Thread(target=check_and_post_curated_news, args=(True,)).start()
-        return HTMLResponse('<script>alert("جاري فحص القنوات ونشر الأخبار المستوفية للشروط فوراً..."); window.location.href="/";</script>')
-
-    @app.get("/trigger-comments")
-    def trigger_comments():
-        threading.Thread(target=process_comments_once).start()
-        return HTMLResponse('<script>alert("جاري فحص جميع المنشورات والرد على أي تعليقات جديدة..."); window.location.href="/";</script>')
-else:
-    app = None
-
-
-# ===== محرك التعليقات الشامل (الأساسية والمتفرعة) =====
-def process_comments_once():
-    if not SYSTEM_STATE["bot_enabled"] or not FACEBOOK_PAGE_TOKEN:
-        return
-
+def post_reply(comment_id: str, reply_text: str) -> bool:
+    url = f"https://graph.facebook.com/v19.0/{comment_id}/comments"
     try:
-        SYSTEM_STATE["last_comment_check"] = datetime.now().strftime("%I:%M:%S %p")
-        posts = []
-        # 1. فحص المنشورات
-        try:
-            url_feed = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/feed"
-            res_feed = requests.get(url_feed, params={
-                "fields": "id,message,comments.limit(30){id,message,from,created_time,comments.limit(30){id,message,from,created_time}}",
-                "access_token": FACEBOOK_PAGE_TOKEN,
-                "limit": 15
-            }, timeout=15).json()
-            posts.extend(res_feed.get("data", []))
-        except:
-            pass
-
-        # 2. فحص الصور
-        try:
-            url_photos = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/photos"
-            res_photos = requests.get(url_photos, params={
-                "type": "uploaded",
-                "fields": "id,name,comments.limit(30){id,message,from,created_time,comments.limit(30){id,message,from,created_time}}",
-                "access_token": FACEBOOK_PAGE_TOKEN,
-                "limit": 10
-            }, timeout=15).json()
-            posts.extend(res_photos.get("data", []))
-        except:
-            pass
-        for post in posts:
-            post_context = post.get("message", "")
-            top_comments = post.get("comments", {}).get("data", [])
-
-            for t_comment in top_comments:
-                t_id = t_comment.get("id")
-                t_text = t_comment.get("message", "").strip()
-                t_from = t_comment.get("from") or {}
-                t_author = t_from.get("name", "متابع")
-                t_author_id = str(t_from.get("id", ""))
-
-                nested_comments = t_comment.get("comments", {}).get("data", [])
-
-                # التحقق هل الصفحة ردت بالفعل على هذا التعليق الرئيسي
-                page_replied_to_parent = any(
-                    str((r.get("from") or {}).get("id", "")) == str(FACEBOOK_PAGE_ID)
-                    or PAGE_NAME in (r.get("from") or {}).get("name", "")
-                    for r in nested_comments
-                )
-
-                # 1. الرد على التعليق الرئيسي إذا لم يتم الرد عليه
-                if t_id not in replied_comments_memory and t_text and t_author_id != str(FACEBOOK_PAGE_ID) and PAGE_NAME not in t_author:
-                    if not page_replied_to_parent:
-                        reply = generate_smart_comment_reply(post_context, t_text, t_author)
-                        if reply:
-                            post_comment_reply(t_id, reply)
-                    replied_comments_memory.add(t_id)
-                    save_json_set(REPLIED_FILE, replied_comments_memory)
-
-                # 2. الرد على الردود المتفرعة (Nested Replies) داخل المحادثة
-                for n_comment in nested_comments:
-                    n_id = n_comment.get("id")
-                    n_text = n_comment.get("message", "").strip()
-                    n_from = n_comment.get("from") or {}
-                    n_author = n_from.get("name", "متابع")
-                    n_author_id = str(n_from.get("id", ""))
-
-                    if n_id in replied_comments_memory or not n_text:
-                        continue
-                    if n_author_id == str(FACEBOOK_PAGE_ID) or PAGE_NAME in n_author:
-                        continue
-
-                    thread_context = f"المنشور:\n{post_context[:300]}\n\nالتعليق الأساسي:\n{t_text}"
-                    n_reply = generate_smart_comment_reply(thread_context, n_text, n_author)
-                    if n_reply:
-                        post_comment_reply(n_id, n_reply)
-                    replied_comments_memory.add(n_id)
-                    save_json_set(REPLIED_FILE, replied_comments_memory)
-
-    except Exception as e:
-        print(f"Comments engine error: {e}")
-
-
-def generate_smart_comment_reply(context_text: str, comment_text: str, author: str) -> str | None:
-    now_year = "2026"
-    prompt = f"""أنت محرر الذكاء الاصطناعي الذكي، اللبق، والخبير لصفحة "{PAGE_NAME}" الرسمية على فيسبوك الخاصة بمدينة الموصل ومحافظة نينوى.
-نحن الآن في عام ({now_year}).
-
-مهمتك:
-قراءة المنشور وفهم سياقه بدقة، ثم قراءة تعليق المتابع ({author}) وتقديم رد ذكي، شافي، وافٍ، ومباشر يجيب عن سؤاله ويخدمه بأعلى درجات اللباقة والاحترام.
-
-سياق المنشور وتفاصيله الكاملة:
----
-{context_text[:2500] if context_text else "منشور عام لصفحة الموصل AI"}
----
-
-تعليق المتابع ({author}):
-"{comment_text}"
-
-تعليمات صياغة الرد (حتمية وإلزامية):
-1. **الفهم والشمولية**: اقرأ تعليق المتابع بعناية واربطه بتفاصيل المنشور أعلاه. إذا كان يسأل عن شروط، ضوابط، تفاصيل، أو استفسار توضيحي، اشرح له النقاط بدقة ووضوح وبشكل منظم ومفيد يغنيه عن البحث، واختم بجملة ترحيبية أو استفسار إن كان بحاجة لمزيد من المساعدة.
-2. **الأسلوب واللغة**: تحدث بأسلوب عراقي/مصلاوي راقٍ وودود ومحترم (أو فصحى مبسطة لطيفة مثل: أهلاً وسهلاً بك أخي العزيز، تدلل، بخدمتك)، كأنك محرر ووكيل ذكي يمثل الصفحة بأفضل وجه.
-3. **تجنب البتر والاختصار المفرط**: ممنوع نهائياً الردود المبتورة أو غير المكتملة أو التحيات الفارغة مثل "أهلاً بيك" وحدها دون إجابة. يجب أن تكتمل كل فكرة وجملة حتى نهايتها.
-4. **قواعد الأقواس الإلزامية**:
-   - أي جملة أو عبارة كاملة باللغة الإنكليزية، ضع الجملة كاملة بين قوسين: (مثل هذه الجملة).
-   - أي كلمة إنكليزية منفردة أو حرف إنكليزي، ضعه بين قوسين مثل: (AI)، (DNA).
-   - الأرقام المكتوبة كأرقام (digits) والنسب المئوية ضعها بين قوسين مثل: (2026)، (5%)، (24).
-   - الأرقام المكتوبة ككلمات عربية مثل "مليون" أو "آلاف" أو "خمسة" لا تضعها بين أقواس أبداً.
-5. إذا كان التعليق مسيئاً تماماً، اكتب فقط: SKIP.
-
-الرد الكامل المتقن:"""
-
-    raw_reply = call_gemini(prompt, max_tokens=1200, temperature=0.7)
-    if not raw_reply or "SKIP" in raw_reply or len(raw_reply) < 5:
-        return None
-
-    # تطبيق الفلترة الإلزامية للأقواس
-    return format_text_parentheses(raw_reply)
-
-
-def post_comment_reply(comment_id: str, reply_text: str) -> bool:
-    try:
-        url = f"https://graph.facebook.com/v19.0/{comment_id}/comments"
         res = requests.post(url, data={
             "message": reply_text,
             "access_token": FACEBOOK_PAGE_TOKEN
         }, timeout=15).json()
 
         if "id" in res:
-            SYSTEM_STATE["comments_replied_count"] += 1
-            print(f"✅ تم الرد على التعليق {comment_id}: {reply_text[:50]}...")
+            print(f"  ✅ تم الرد بنجاح على التعليق [{comment_id}]")
             return True
         else:
-            print(f"❌ فشل إرسال الرد للتعليق {comment_id}: {res}")
+            print(f"  ❌ فشل الرد: {res.get('error', {}).get('message', 'خطأ غير معروف')}")
             return False
     except Exception as e:
-        print(f"Post comment error: {e}")
+        print(f"  ❌ خطأ في إرسال الرد: {e}")
         return False
 
 
-def comments_loop():
-    while True:
-        process_comments_once()
-        time.sleep(20)  # فحص سريع كل 20 ثانية لسرعة الاستجابة الفائقة
-
-
-# ===== محرك الأخبار المنظم حسب الأهمية والمصادر =====
-CHANNELS = [
-    {"source": "alsbaahiq", "url": "https://t.me/s/alsbaahiq"},
-    {"source": "jamal_albadrany", "url": "https://t.me/s/jamal_albadrany"},
-    {"source": "Axia_Tech", "url": "https://t.me/s/Axia_Tech"}
-]
-
-# كلمات مفتاحية دالة على أخبار الموصل والرواتب العاجلة لجريدة الصباح
-MOSUL_AND_SALARY_KEYWORDS = [
-    "موصل", "نينوى", "الحدباء", "سنجار", "تلعفر", "القيارة", "مخمور", "الحمدانية", "سهل نينوى", "بادوش",
-    "رواتب", "راتب", "تعيينات", "تعيين", "عقود", "متقاعدين", "تقاعد", "رعاية اجتماعية", "الحماية الاجتماعية",
-    "سلم الرواتب", "صرف الرواتب", "وزارة المالية", "مصرف الرافدين", "مصرف الرشيد"
-]
-
-# كلمات مفتاحية للأخبار العاجلة والطارئة لجمال البدراني
-JAMAL_URGENT_KEYWORDS = [
-    "عاجل", "طارئ", "تعطيل الدوام", "عطلة رسمية", "إغلاق الجسر", "فتح الجسر", "أمطار", "سيول", "حظر",
-    "مجلس محافظة نينوى", "محافظ نينوى", "طوارئ", "خلية الأزمة", "انقطاع الماء", "انقطاع الكهرباء"
-]
-
-def check_and_post_curated_news(force: bool = False):
-    if not SYSTEM_STATE["bot_enabled"] and not force:
+def monitor_and_reply_cycle():
+    if not SYSTEM_STATE["comments_enabled"]:
         return
 
-    now_t = time.time()
-    SYSTEM_STATE["last_news_check"] = datetime.now().strftime("%I:%M:%S %p")
+    now_str = datetime.now().strftime("%I:%M:%S %p")
+    SYSTEM_STATE["last_comment_check"] = now_str
 
-    for ch in CHANNELS:
-        source_name = ch["source"]
-        url = ch["url"]
+    posts = get_posts_with_comments()
+    if not posts:
+        return
 
-        try:
-            res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-            if res.status_code != 200:
-                continue
+    new_replies = 0
 
-            soup = BeautifulSoup(res.text, "html.parser")
-            messages = soup.find_all("div", class_="tgme_widget_message")
+    def process_single_comment(c_data, context_text):
+        nonlocal new_replies
+        c_id = c_data.get("id", "")
+        c_text = c_data.get("message", "").strip()
+        c_author = c_data.get("from", {}).get("name", "متابع")
+        c_author_id = str(c_data.get("from", {}).get("id", ""))
 
-            for msg in reversed(messages):
-                post_id = msg.get("data-post")
-                if not post_id or post_id in published_news_memory:
-                    continue
+        if len(c_text) < 2:
+            return
+        if c_author_id == str(FACEBOOK_PAGE_ID) or PAGE_NAME in c_author:
+            return
+        if c_id in replied_memory:
+            return
 
-                text_elem = msg.find("div", class_="tgme_widget_message_text")
-                if not text_elem or len(text_elem.get_text().strip()) < 35:
-                    continue
+        print(f"  💬 تعليق جديد من [{c_author}]: {c_text[:70]}")
+        reply = generate_smart_reply(context_text, c_text, c_author)
+        if reply:
+            if post_reply(c_id, reply):
+                save_replied(c_id)
+                replied_memory.add(c_id)
+                new_replies += 1
+                SYSTEM_STATE["comments_replied_count"] += 1
+                time.sleep(2)
+        else:
+            save_replied(c_id)
+            replied_memory.add(c_id)
 
-                raw_text = text_elem.get_text(separator="\n").strip()
+    for post in posts:
+        post_text = post.get("message") or post.get("description") or post.get("title") or post.get("name") or ""
+        top_comments = post.get("comments", {}).get("data", [])
 
-                # تصنيف وتوقيت كل مصدر:
-                should_publish_now = False
-                post_type = "normal"
+        for t_comment in top_comments:
+            t_id = t_comment.get("id", "")
+            nested_comments = t_comment.get("comments", {}).get("data", [])
 
-                if source_name == "Axia_Tech":
-                    # قاعدة التكنولوجيا: كل 6 ساعات منشور واحد
-                    if force or (now_t - TIMESTAMPS["Axia_Tech"] >= TECH_INTERVAL):
-                        should_publish_now = True
-                        post_type = "tech"
-                    else:
-                        continue  # لم يحن وقت المنشور التقني بعد
+            already_replied_fb = any(
+                str(r.get("from", {}).get("id", "")) == str(FACEBOOK_PAGE_ID)
+                or PAGE_NAME in (r.get("from", {}).get("name") or "")
+                for r in nested_comments
+            )
 
-                elif source_name == "alsbaahiq":
-                    # فحص هل الخبر يخص الموصل أو الرواتب والتعيينات
-                    is_urgent_topic = any(kw in raw_text for kw in MOSUL_AND_SALARY_KEYWORDS)
-                    if is_urgent_topic:
-                        # نشر فوري ومباشر!
-                        should_publish_now = True
-                        post_type = "alsbaahiq_urgent"
-                    else:
-                        # خبر عام مهم: كل 3 ساعات منشور واحد فقط
-                        if force or (now_t - TIMESTAMPS["alsbaahiq_general"] >= ALSABAH_GENERAL_INTERVAL):
-                            should_publish_now = True
-                            post_type = "alsbaahiq_general"
-                        else:
-                            continue
-
-                elif source_name == "jamal_albadrany":
-                    # فحص هل الخبر عاجل أو طارئ للموصل
-                    is_urgent_jamal = any(kw in raw_text for kw in JAMAL_URGENT_KEYWORDS)
-                    if is_urgent_jamal:
-                        should_publish_now = True
-                        post_type = "jamal_urgent"
-                    else:
-                        # خبر موصلي اعتيادي: كل ساعتين كحد أدنى حسب الأهمية
-                        if force or (now_t - TIMESTAMPS["jamal_regular"] >= JAMAL_REGULAR_INTERVAL):
-                            should_publish_now = True
-                            post_type = "jamal_regular"
-                        else:
-                            continue
-
-                if not should_publish_now:
-                    continue
-
-                # صياغة الخبر بالذكاء الاصطناعي مع فرض الشروط الصارمة
-                formatted_post = format_news_post(source_name, raw_text, post_type)
-                if formatted_post and "SKIP" not in formatted_post:
-                    # نشر الخبر على فيسبوك كنص نقي
-                    if post_to_fb(formatted_post):
-                        published_news_memory.add(post_id)
-                        save_json_set(PUBLISHED_NEWS_FILE, published_news_memory)
-
-                        # تحديث التوقيتات المناسبة
-                        if post_type == "tech":
-                            TIMESTAMPS["Axia_Tech"] = now_t
-                        elif post_type == "alsbaahiq_general":
-                            TIMESTAMPS["alsbaahiq_general"] = now_t
-                        elif post_type == "jamal_regular":
-                            TIMESTAMPS["jamal_regular"] = now_t
-
-                        SYSTEM_STATE["news_posted_count"] += 1
-                        SYSTEM_STATE["last_news_post"] = f"[{source_name}] " + datetime.now().strftime("%I:%M %p")
-                        print(f"📢 تم نشر خبر جديد ({post_type}) بنجاح: {post_id}")
-                        return  # نكتفي بخبر واحد في هذه الدورة لمنع التزاحم
+            if t_id not in replied_memory:
+                if already_replied_fb:
+                    save_replied(t_id)
+                    replied_memory.add(t_id)
                 else:
-                    published_news_memory.add(post_id)
-                    save_json_set(PUBLISHED_NEWS_FILE, published_news_memory)
+                    process_single_comment(t_comment, post_text)
 
-        except Exception as e:
-            print(f"News check error on {source_name}: {e}")
+            for n_comment in nested_comments:
+                if n_comment.get("id", "") not in replied_memory:
+                    full_context = f"المنشور:\n{post_text}\n\nسياق الحوار الأولي:\n{t_comment.get('message', '')}"
+                    process_single_comment(n_comment, full_context)
+
+    if new_replies > 0:
+        print(f"  🎯 تم الرد على ({new_replies}) تعليقات بنجاح!")
+        SYSTEM_STATE["last_action"] = f"تم الرد على {new_replies} تعليق في {now_str}"
 
 
-def format_news_post(source: str, raw_text: str, post_type: str) -> str | None:
-    prompt = f"""أنت رئيس تحرير صفحة فيسبوك "{PAGE_NAME}".
-المصدر: ({source})
-نوع التوزيع: ({post_type})
+# -------------------------------------------------------------
+# 3. وكيل الأخبار الذكي (News Engine)
+# -------------------------------------------------------------
+MOSUL_KEYWORDS = [
+    "الموصل", "نينوى", "الحدباء", "تلعفر", "سنجار", "مخمور", "حمام العليل",
+    "الحمدانية", "بعشيقة", "مطار الموصل", "جامعة الموصل", "محافظ نينوى", "سد الموصل"
+]
+SALARY_KEYWORDS = [
+    "رواتب", "راتب", "سلم الرواتب", "صرف الرواتب", "صرف رواتب", "تمويل رواتب",
+    "تعيينات", "درجات وظيفية", "عقود", "الموازنة"
+]
+BADRANY_URGENT_KEYWORDS = [
+    "عاجل", "عاجـل", "هام", "قرار", "المرور", "عطلة", "طوارئ",
+    "صحة نينوى", "شرطة نينوى", "توجيه رسمي", "مجلس الوزراء"
+]
+
+def fetch_telegram_messages(channel_handle: str) -> list:
+    url = f"https://t.me/s/{channel_handle}"
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=12)
+        if res.status_code != 200:
+            return []
+        
+        soup = BeautifulSoup(res.text, "html.parser")
+        msg_divs = soup.find_all("div", class_="tgme_widget_message")
+        
+        results = []
+        for div in msg_divs:
+            post_id = div.get("data-post")
+            if not post_id:
+                continue
+            
+            text_elem = div.find("div", class_="tgme_widget_message_text")
+            if not text_elem:
+                continue
+            
+            raw_text = text_elem.get_text(separator="\n").strip()
+            if len(raw_text) < 30:
+                continue
+            
+            results.append({"id": post_id, "text": raw_text})
+        return results
+    except Exception as e:
+        print(f"  ⚠️ خطأ في قراءة @{channel_handle}: {e}")
+        return []
+
+def classify_news_item(channel: str, text: str) -> tuple[bool, bool]:
+    text_lower = text.lower()
+    
+    if channel == "alsbaahiq":
+        is_mosul = any(k in text for k in MOSUL_KEYWORDS)
+        is_salary = any(k in text for k in SALARY_KEYWORDS)
+        if is_mosul or is_salary:
+            return True, True
+        iraq_general = any(k in text for k in ["العراق", "مجلس الوزراء", "السوداني", "وزارة", "المرور", "الكهرباء"])
+        if iraq_general:
+            return True, False
+        return False, False
+        
+    elif channel == "jamal_albadrany":
+        is_urgent = any(k in text for k in BADRANY_URGENT_KEYWORDS)
+        is_mosul = any(k in text for k in MOSUL_KEYWORDS)
+        if is_urgent or is_mosul:
+            return True, True
+        if any(k in text for k in ["تنويه", "المواطنين", "وزارة", "الخدمات"]):
+            return True, False
+        return False, False
+        
+    elif channel == "Axia_Tech":
+        tech_words = ["ذكاء اصطناعي", "تطبيق", "تحديث", "أبل", "جوجل", "سامسونج", "chatgpt", "gemini", "هاتف", "ميزة", "تقنية", "ai"]
+        if any(w in text_lower for w in tech_words):
+            return True, False
+        return False, False
+
+    return False, False
+
+def rewrite_news_adaptive(channel: str, raw_text: str) -> str | None:
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    
+    channel_context = {
+        "alsbaahiq": "مصدر رسمي عراقي",
+        "jamal_albadrany": "أخبار محلية عاجلة وخدمية للمواطنين",
+        "Axia_Tech": "أخبار تكنولوجيا وذكاء اصطناعي تفيد الناس"
+    }.get(channel, "أخبار عامة")
+
+    prompt = f"""أنت رئيس تحرير صحفي ذكي ومحترف لصفحة فيسبوك رسمية تسمى "{PAGE_NAME}".
+التاريخ الحالي: {current_date} (عام 2026).
+نوع المحتوى: {channel_context}.
 
 الخبر الخام:
 \"\"\"
 {raw_text}
 \"\"\"
 
-معايير الفلترة والموافقة:
-1. إذا كان المصدر (alsbaahiq):
-   - اقبل فوراً إذا كان يخص نينوى/الموصل، أو صرف وتعديل الرواتب، أو تعيينات وعقود، أو رعاية اجتماعية.
-   - إذا كان خبراً عاماً، اقبل فقط إذا كان قراراً حكومياً حيوياً يهم المواطن. ارفض الأخبار السياسية الحزبية أو الرياضة: أرجع SKIP.
-2. إذا كان المصدر (jamal_albadrany):
-   - اقبل القرارات، الجسور، الخدمات، العطل، الأمطار، والطوارئ في الموصل.
-   - ارفض الحوادث الشخصية والوفيات والشائعات والآراء: أرجع SKIP.
-3. إذا كان المصدر (Axia_Tech):
-   - اقبل التطورات العملية في الذكاء الاصطناعي والتكنولوجيا. ارفض الإعلانات: أرجع SKIP.
+التعليمات التحريرية الصارمة:
+1. الأمانة والدقة المطلقة: ممنوع اختلاق أو تخمين أي معلومة. الأرقام، التواريخ، والوقائع يجب أن تطابق الأصل 100%.
+2. المرونة والذكاء التحريري في الطول:
+   - إذا كان الخبر خبراً سريعاً أو قراراً مباشراً (مثل تمديد مهلة، عطلة، تبليغ، تصريح سريع)، صِغه في سطر واحد أو سطرين مكثفين ومباشرين.
+   - إذا كان الخبر يحمل قائمة قرارات طويلة (مثل جلسة حكومية)، لا تسرد كل البنود؛ اختر أهم 3 إلى 4 قرارات تهم المواطن والشارع مباشرة ولخصها بنقاط واضحة.
+3. اكتمال النص وسلامة النهاية: احرص تماماً على أن يكون المنشور مكتملاً حتى آخر كلمة، وممنوع منعاً باتاً أن تكون الجملة الأخيرة ناقصة أو مقطوعة.
+4. احذف تماماً أي ذكر لأسماء القنوات الأصلية (مثل: الصباح، البدراني، تيليجرام)، واحذف الروابط والمعرفات الخارجية.
+5. ابدأ بإيموجي صحفي رسمي مناسب (مثل 🚨، 📢، 💡، 🏗️).
+6. اختم بسؤال تفاعلي ذكي ومحفز للجمهور للتعليق وإبداء الرأي.
+7. اختم بهاشتاغات الصفحة:
+#الموصل_AI #الموصل #نينوى #العراق
 
-الشروط الصارمة للصياغة:
-1. كبسولة سريعة جداً: عنوان بارز سطر واحد مع إيموجي.
-2. سطران اثنان فقط (نقطتان برصاصة •) تلخصان جوهر الخبر في أقل من 35 كلمة!
-3. سؤال تفاعلي ذكي وقصير جداً للمتابعين.
-4. الهاشتاغات: #الموصل_AI #الموصل #نينوى (أو #تكنولوجيا للأخبار التقنية).
-5. شرط التنسيق الحتمي: أي كلمة باللغة الإنكليزية أو أي حرف إنكليزي، وأي رقم (سنة، نسبة، عدد)، يجب أن يكون بين قوسين حصراً مثل: (AI)، (2026)، (5)، (100).
+أرجع نص المنشور الجاهز للنشر فقط:"""
 
-أرجع المنشور المصاغ مباشرة، أو كلمة SKIP فقط إذا لم يستوفِ المعايير:"""
+    ordered_keys = [GEMINI_KEYS[i] for i in KEY_PRIORITY if i < len(GEMINI_KEYS)]
+    
+    for key in ordered_keys:
+        client = genai.Client(api_key=key)
+        for model in ACTIVE_MODELS:
+            try:
+                chat = client.chats.create(
+                    model=model,
+                    config=types.GenerateContentConfig(
+                        temperature=0.3,
+                        max_output_tokens=1000
+                    )
+                )
+                response = chat.send_message(prompt)
+                if response and response.text:
+                    out = response.text.strip()
+                    if len(out) > 20 and "#" in out and "SKIP" not in out:
+                        return out
+            except Exception as e:
+                err = str(e)
+                if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                    break
+                continue
+                
+    return None
 
-    raw_news = call_gemini(prompt, max_tokens=250, temperature=0.2)
-    if not raw_news or "SKIP" in raw_news or len(raw_news) < 30:
-        return None
-
-    # تطبيق فاحص الأقواس الإلزامي لضمان عدم فوات أي رقم أو كلمة إنكليزية
-    return wrap_en_and_numbers(raw_news)
-
-
-def post_to_fb(message: str) -> bool:
+def publish_news_to_facebook(text: str) -> bool:
+    url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/feed"
     try:
-        url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/feed"
-        r = requests.post(url, data={
-            "message": message,
+        res = requests.post(url, data={
+            "message": text,
             "access_token": FACEBOOK_PAGE_TOKEN
         }, timeout=20).json()
-        return "id" in r
-    except:
+        
+        if "id" in res:
+            print(f"  ✅ تم نشر الخبر بنجاح على فيسبوك! (Post ID: {res['id']})")
+            return True
+        else:
+            err = res.get("error", {}).get("message", "خطأ غير معروف")
+            print(f"  ❌ فشل نشر الخبر على فيسبوك: {err}")
+            return False
+    except Exception as e:
+        print(f"  ❌ خطأ في الاتصال بفيسبوك: {e}")
         return False
 
+def check_and_publish_news_cycle():
+    if not SYSTEM_STATE["news_enabled"]:
+        return False
 
-# ===== محرك مجدول الأخبار (فحص دوري كل 6 دقائق) =====
-def news_scheduler_loop():
+    now_str = datetime.now().strftime("%I:%M:%S %p")
+    SYSTEM_STATE["last_news_check"] = now_str
+    now = time.time()
+    ts = load_timestamps()
+    published_ids = load_published_news()
+
+    MIN_GLOBAL_INTERVAL = 25 * 60
+    if (now - ts.get("last_any_post", 0)) < MIN_GLOBAL_INTERVAL:
+        return False
+
+    channels_to_check = [
+        {"name": "alsbaahiq",       "min_interval": 3 * 3600, "ts_key": "last_alsabah"},
+        {"name": "jamal_albadrany", "min_interval": 3 * 3600, "ts_key": "last_badrany"},
+        {"name": "Axia_Tech",       "min_interval": 8 * 3600, "ts_key": "last_tech"},
+    ]
+
+    for ch_info in channels_to_check:
+        ch_name = ch_info["name"]
+        ts_key = ch_info["ts_key"]
+        min_interval = ch_info["min_interval"]
+        last_post_time = ts.get(ts_key, 0)
+        time_since_last = now - last_post_time
+
+        messages = fetch_telegram_messages(ch_name)
+        if not messages:
+            continue
+
+        unseen = [m for m in messages if m["id"] not in published_ids]
+        if not unseen:
+            continue
+
+        candidate = None
+        for item in reversed(unseen):
+            eligible, urgent = classify_news_item(ch_name, item["text"])
+            if not eligible:
+                continue
+
+            if urgent or time_since_last >= min_interval:
+                candidate = item
+                break
+
+        if candidate:
+            print(f"\n📢 خبر جديد مؤهل من @{ch_name} | ID: {candidate['id']}")
+            formatted = rewrite_news_adaptive(ch_name, candidate["text"])
+            if not formatted:
+                save_published_news(candidate["id"])
+                continue
+
+            if publish_news_to_facebook(formatted):
+                save_published_news(candidate["id"])
+                published_news_memory.add(candidate["id"])
+                ts["last_any_post"] = now
+                ts[ts_key] = now
+                save_timestamps(ts)
+                
+                SYSTEM_STATE["news_published_count"] += 1
+                SYSTEM_STATE["last_news_title"] = formatted.split("\n")[0][:45]
+                SYSTEM_STATE["last_action"] = f"تم نشر خبر جديد من @{ch_name} في {now_str}"
+                return True
+            else:
+                save_published_news(candidate["id"])
+                return False
+
+    return False
+
+
+# -------------------------------------------------------------
+# 4. المعمارية المعزولة تماماً (Background Workers)
+# -------------------------------------------------------------
+def comments_worker():
+    print("🚀 بدء تشغيل خادم التعليقات المستمر (Thread 1) 24/7...")
     while True:
-        check_and_post_curated_news()
-        time.sleep(360)  # فحص سريع كل 6 دقائق لاقتناص أي خبر عاجل للموصل أو الرواتب فوراً
+        try:
+            monitor_and_reply_cycle()
+        except Exception as e:
+            print(f"⚠️ خطأ غير متوقع في خادم التعليقات: {e}")
+        time.sleep(25)
+
+def news_worker():
+    print("🚀 بدء تشغيل خادم الأخبار المستقل (Thread 2) كل 15 دقيقة...")
+    while True:
+        try:
+            check_and_publish_news_cycle()
+        except Exception as e:
+            print(f"⚠️ خطأ غير متوقع في خادم الأخبار: {e}")
+        time.sleep(900)  # فحص كل 15 دقيقة
 
 
-# تشغيل المحركات في الخلفية عند بدء تشغيل السيرفر
-threading.Thread(target=comments_loop, daemon=True).start()
-threading.Thread(target=news_scheduler_loop, daemon=True).start()
+# -------------------------------------------------------------
+# 5. تطبيق الويب ولوحة التحكم (FastAPI)
+# -------------------------------------------------------------
+if HAS_FASTAPI:
+    app = FastAPI(title="الموصل AI - خادم سحابي متكامل 24/7")
+
+    @app.on_event("startup")
+    def startup_event():
+        # تشغيل الوكيلين في خيطين منفصلين تماماً
+        t_comments = threading.Thread(target=comments_worker, daemon=True)
+        t_comments.start()
+        
+        t_news = threading.Thread(target=news_worker, daemon=True)
+        t_news.start()
+
+    @app.get("/", response_class=HTMLResponse)
+    def dashboard():
+        comments_status = "🟢 شغال ويفحص كل 25 ثانية" if SYSTEM_STATE["comments_enabled"] else "🔴 متوقف مؤقتاً"
+        news_status = "🟢 شغال ويفحص القنوات الـ 3 كل 15 دقيقة" if SYSTEM_STATE["news_enabled"] else "🔴 متوقف مؤقتاً"
+
+        toggle_c_btn = "إيقاف التعليقات ⏸️" if SYSTEM_STATE["comments_enabled"] else "تشغيل التعليقات ▶️"
+        toggle_n_btn = "إيقاف الأخبار ⏸️" if SYSTEM_STATE["news_enabled"] else "تشغيل الأخبار ▶️"
+
+        html = f"""<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>الموصل AI - مركز التحكم السحابي 24/7</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0b1329; color: #f8fafc; text-align: center; padding: 20px; }}
+        .card {{ background: #162447; border-radius: 20px; padding: 25px; max-width: 520px; margin: 15px auto; box-shadow: 0 10px 35px rgba(0,0,0,0.5); border: 1px solid #1f3a60; }}
+        h1 {{ color: #00d2ff; font-size: 24px; margin-bottom: 4px; }}
+        .section {{ background: #1f3158; border-radius: 14px; padding: 15px; margin: 15px 0; text-align: right; border: 1px solid #2a4365; }}
+        .section-title {{ font-weight: bold; font-size: 16px; color: #00d2ff; margin-bottom: 8px; }}
+        .btn {{ display: inline-block; width: 47%; padding: 12px; margin: 5px 1%; border: none; border-radius: 10px; font-size: 14px; font-weight: bold; cursor: pointer; text-decoration: none; box-sizing: border-box; }}
+        .btn-action {{ background: #2ec4b6; color: #0b1329; }}
+        .btn-toggle {{ background: #0077b6; color: white; }}
+        .stats {{ font-size: 13px; color: #cbd5e1; line-height: 2; margin-top: 5px; }}
+        .badge {{ padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: bold; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>🌐 الموصل AI - الخادم السحابي المستقل</h1>
+        <p style="color:#94a3b8;font-size:13px;margin-top:0;">وكيل التعليقات + وكيل الأخبار (عزل تام 100%)</p>
+        
+        <!-- قسم التعليقات -->
+        <div class="section">
+            <div class="section-title">💬 وكيل التعليقات الذكي</div>
+            <div class="stats">
+                <div>الحالة: <b>{comments_status}</b></div>
+                <div>آخر فحص: <b>{SYSTEM_STATE["last_comment_check"]}</b></div>
+                <div>إجمالي الردود: <b style="color:#00ff88;">{SYSTEM_STATE["comments_replied_count"]}</b></div>
+            </div>
+            <div style="margin-top:10px;">
+                <a href="/trigger-comments" class="btn btn-action">فحص التعليقات الآن</a>
+                <a href="/toggle-comments" class="btn btn-toggle">{toggle_c_btn}</a>
+            </div>
+        </div>
+
+        <!-- قسم الأخبار -->
+        <div class="section">
+            <div class="section-title">📰 وكيل الأخبار التلقائي (3 قنوات)</div>
+            <div class="stats">
+                <div>الحالة: <b>{news_status}</b></div>
+                <div>القنوات: <b>الصباح | جمال البدراني | التكنولوجيا</b></div>
+                <div>آخر فحص: <b>{SYSTEM_STATE["last_news_check"]}</b></div>
+                <div>إجمالي المنشورات: <b style="color:#00ff88;">{SYSTEM_STATE["news_published_count"]}</b></div>
+                <div>آخر خبر: <i>{SYSTEM_STATE["last_news_title"]}</i></div>
+            </div>
+            <div style="margin-top:10px;">
+                <a href="/trigger-news" class="btn btn-action">فحص الأخبار الآن</a>
+                <a href="/toggle-news" class="btn btn-toggle">{toggle_n_btn}</a>
+            </div>
+        </div>
+
+        <div style="color:#64748b;font-size:12px;margin-top:15px;">
+            آخر إجراء للنظام: {SYSTEM_STATE["last_action"]}
+        </div>
+    </div>
+</body>
+</html>"""
+        return html
+
+    @app.get("/health")
+    def health():
+        return {
+            "status": "ok",
+            "time": datetime.now().isoformat(),
+            "comments_count": SYSTEM_STATE["comments_replied_count"],
+            "news_count": SYSTEM_STATE["news_published_count"]
+        }
+
+    @app.get("/toggle-comments")
+    def toggle_comments():
+        SYSTEM_STATE["comments_enabled"] = not SYSTEM_STATE["comments_enabled"]
+        return HTMLResponse("<script>window.location.href='/';</script>")
+
+    @app.get("/toggle-news")
+    def toggle_news():
+        SYSTEM_STATE["news_enabled"] = not SYSTEM_STATE["news_enabled"]
+        return HTMLResponse("<script>window.location.href='/';</script>")
+
+    @app.get("/trigger-comments")
+    def trigger_comments():
+        threading.Thread(target=monitor_and_reply_cycle).start()
+        return HTMLResponse("<script>alert('تم إطلاق فحص التعليقات فوراً في الخلفية!'); window.location.href='/';</script>")
+
+    @app.get("/trigger-news")
+    def trigger_news():
+        threading.Thread(target=check_and_publish_news_cycle).start()
+        return HTMLResponse("<script>alert('تم إطلاق فحص الأخبار فوراً في الخلفية!'); window.location.href='/';</script>")
+
+else:
+    app = None
 
 if __name__ == "__main__":
-    if HAS_FASTAPI and app:
-        port = int(os.environ.get("PORT", 8080))
+    if HAS_FASTAPI:
+        port = int(os.getenv("PORT", 10000))
         uvicorn.run(app, host="0.0.0.0", port=port)
     else:
+        # تشغيل محلي بدون سيرفر ويب
+        t1 = threading.Thread(target=comments_worker, daemon=True)
+        t1.start()
+        t2 = threading.Thread(target=news_worker, daemon=True)
+        t2.start()
         while True:
-            time.sleep(3600)
+            time.sleep(1)
